@@ -171,7 +171,7 @@ jobs:
           provenance: false
 
       - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0   # v-prefixed tag (post-2025 supply-chain migration)
         with:
           image-ref: ${{ env.FULL_IMAGE }}:${{ github.sha }}
           severity: ${{ inputs.scan-severity }}
