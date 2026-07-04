@@ -6,7 +6,7 @@
 #          └─ push (build multi-arch, push, SBOM + SLSA provenance, cosign sign)
 #
 # Why split scan and push into separate jobs?
-#   • A scan failure can never trigger a push (push `needs: scan` and gates on success).
+#   • A scan failure can never trigger a push (push `needs: scan` and runs only on success).
 #   • Each job carries least-privilege permissions (scan gets security-events:write
 #     for SARIF; push gets id-token:write for cosign — neither has the other's power).
 #   • In the Actions UI you immediately see which phase failed instead of digging
@@ -14,23 +14,32 @@
 #   • Re-running just `push` (e.g. after a transient registry error) doesn't redo
 #     the scan, since BuildKit layers come from the shared GHA cache.
 #
+# Hardcoded in this file (not exposed as inputs):
+#   REGISTRY     = cr.yandex
+#   REGISTRY_ID  = ${{ vars.YC_REGISTRY_ID }}    (GitHub variable)
+#   PLATFORMS    = linux/amd64,linux/arm64
+#   PUSH         = always (this is a release workflow)
+#
 # Usage from another repo:
 #
 #   jobs:
 #     docker:
 #       uses: <org>/github-actions/.github/workflows/docker.yaml@main
 #       with:
-#         image-name:  myapp
-#         registry-id: ${{ vars.YC_REGISTRY_ID }}   # e.g. crp1234567890abcdef
-#         # optional: dockerfile, context, platforms, scan-severity,
-#         #           smoke-test-args, push, provenance, sbom, registry-host, registry-repo
-#       secrets: inherit                            # forwards YC_CR_SA_AUTH_JSON
+#         image-name: myapp
+#         # optional: dockerfile, context, scan-severity,
+#         #           smoke-test-args, provenance, sbom, registry-repo
+#       secrets: inherit    # REQUIRED — forwards YC_CR_SA_AUTH_JSON (no explicit secret declared)
 #
-# Required caller secret:
-#   YC_CR_SA_AUTH_JSON  - YC service account JSON key (used as `json_key` password)
+# Required caller repo variable + secret:
+#   vars.YC_REGISTRY_ID        - Yandex Container Registry id (e.g. crp1234567890abcdef)
+#   secrets.YC_CR_SA_AUTH_JSON - YC service account JSON key (used as `json_key` password)
+#
+# Note on `secrets: inherit`: this workflow does NOT declare a `secrets:` block, so the
+# caller MUST pass `secrets: inherit`. Without it, YC_CR_SA_AUTH_JSON is empty and login fails.
 #
 # The full image reference is built as:
-#   <registry-host>/<registry-id>/<registry-repo|caller-repo>/<image-name>
+#   cr.yandex/<YC_REGISTRY_ID>/<registry-repo|caller-repo>/<image-name>
 # mirroring the existing cr.yandex/<id>/<repo>/<image> convention.
 name: Build & Push Docker Image (YC CR)
 
@@ -39,10 +48,6 @@ on:
     inputs:
       image-name:
         description: Image name within the registry (last path segment).
-        required: true
-        type: string
-      registry-id:
-        description: Yandex Container Registry id (e.g. crp1234567890abcdef).
         required: true
         type: string
       dockerfile:
@@ -55,11 +60,6 @@ on:
         required: false
         default: .
         type: string
-      platforms:
-        description: Target platforms (comma-separated). Only used when push=true.
-        required: false
-        default: linux/amd64,linux/arm64
-        type: string
       scan-severity:
         description: Trivy severity levels that fail the build.
         required: false
@@ -69,11 +69,6 @@ on:
         description: Args appended to `docker run` against the built amd64 image. Empty = skip.
         required: false
         default: ''
-        type: string
-      push:
-        description: Push the image. Set false for PR validation (scan only, no multi-arch).
-        required: false
-        default: 'true'
         type: string
       provenance:
         description: SLSA provenance mode (mode=max | mode=min | false).
@@ -85,26 +80,22 @@ on:
         required: false
         default: 'true'
         type: string
-      registry-host:
-        description: Registry hostname.
-        required: false
-        default: cr.yandex
-        type: string
       registry-repo:
         description: Repository segment between registry id and image name. Empty = caller repo name.
         required: false
         default: ''
         type: string
-    secrets:
-      YC_CR_SA_AUTH_JSON:
-        description: "YC service account JSON key for `docker login` (username: json_key)."
-        required: true
 
 permissions:
   contents: read   # least-privilege default; expanded per job below
 
+env:
+  REGISTRY: cr.yandex
+  REGISTRY_ID: ${{ vars.YC_REGISTRY_ID }}
+  PLATFORMS: linux/amd64,linux/arm64
+
 concurrency:
-  group: docker-${{ inputs.image-name }}-${{ github.ref }}
+  group: ${{ inputs.image-name }}-${{ github.ref }}
   cancel-in-progress: false   # never cancel a multi-arch push mid-flight
 
 jobs:
@@ -135,14 +126,12 @@ jobs:
 
       - name: Prepare image reference
         env:
-          HOST: ${{ inputs.registry-host }}
-          ID: ${{ inputs.registry-id }}
           REPO_IN: ${{ inputs.registry-repo }}
           REPO_DEFAULT: ${{ github.event.repository.name }}
           IMAGE_NAME: ${{ inputs.image-name }}
         run: |
           REPO="${REPO_IN:-$REPO_DEFAULT}"
-          FULL="${HOST}/${ID}/${REPO}/${IMAGE_NAME}"
+          FULL="${REGISTRY}/${REGISTRY_ID}/${REPO}/${IMAGE_NAME}"
           echo "FULL_IMAGE=${FULL}" >> "$GITHUB_ENV"
           echo "::notice::Scanning ${FULL}:${{ github.sha }}"
 
@@ -153,7 +142,7 @@ jobs:
       - name: Log in to Yandex Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.registry-host }}
+          registry: ${{ env.REGISTRY }}
           username: json_key
           password: ${{ secrets.YC_CR_SA_AUTH_JSON }}
 
@@ -204,13 +193,12 @@ jobs:
             echo "| Severity gate | \`${{ inputs.scan-severity }}\` |"
             echo "| Smoke test | ${{ inputs.smoke-test-args != '' && 'ran' || 'skipped' }} |"
             echo "| SARIF | Security › Code scanning alerts |"
-            echo "| Push | \`${{ inputs.push == 'true' && '→ next job' || 'disabled' }}\` |"
+            echo "| Push | → next job (multi-arch) |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   push:
     name: Build & push (multi-arch) + sign
     needs: scan
-    if: ${{ success() && inputs.push == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -221,14 +209,12 @@ jobs:
 
       - name: Prepare image reference
         env:
-          HOST: ${{ inputs.registry-host }}
-          ID: ${{ inputs.registry-id }}
           REPO_IN: ${{ inputs.registry-repo }}
           REPO_DEFAULT: ${{ github.event.repository.name }}
           IMAGE_NAME: ${{ inputs.image-name }}
         run: |
           REPO="${REPO_IN:-$REPO_DEFAULT}"
-          FULL="${HOST}/${ID}/${REPO}/${IMAGE_NAME}"
+          FULL="${REGISTRY}/${REGISTRY_ID}/${REPO}/${IMAGE_NAME}"
           echo "FULL_IMAGE=${FULL}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU (multi-arch)
@@ -240,7 +226,7 @@ jobs:
       - name: Log in to Yandex Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.registry-host }}
+          registry: ${{ env.REGISTRY }}
           username: json_key
           password: ${{ secrets.YC_CR_SA_AUTH_JSON }}
 
@@ -267,7 +253,7 @@ jobs:
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
-          platforms: ${{ inputs.platforms }}
+          platforms: ${{ env.PLATFORMS }}
           push: true
           tags: |
             ${{ env.FULL_IMAGE }}:${{ github.sha }}
@@ -294,7 +280,7 @@ jobs:
             echo "| Key | Value |"
             echo "|---|---|"
             echo "| Image | \`${{ env.FULL_IMAGE }}\` |"
-            echo "| Platforms | \`${{ inputs.platforms }}\` |"
+            echo "| Platforms | \`${{ env.PLATFORMS }}\` |"
             echo "| Digest | \`${{ steps.push.outputs.digest }}\` |"
             echo "| Attestations | provenance=\`${{ inputs.provenance }}\` sbom=\`${{ inputs.sbom }}\` |"
             echo "| Signed | ✅ cosign keyless (OIDC) |"
