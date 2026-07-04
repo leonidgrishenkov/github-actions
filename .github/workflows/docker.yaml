@@ -24,12 +24,22 @@
 #
 #   jobs:
 #     docker:
+#       permissions:
+#         contents: read         # checkout
+#         security-events: write # Trivy SARIF -> Code Scanning (scan job)
+#         id-token: write        # cosign keyless OIDC (push job)
 #       uses: <org>/github-actions/.github/workflows/docker.yaml@main
 #       with:
 #         image-name: myapp
 #         # optional: dockerfile, context, scan-severity,
 #         #           smoke-test-args, provenance, sbom, registry-repo
 #       secrets: inherit    # REQUIRED — forwards YC_CR_SA_AUTH_JSON (no explicit secret declared)
+#
+# WHY the caller must grant permissions:
+#   Reusable workflows can only *maintain or reduce* permissions, never elevate
+#   them. The called jobs request `security-events: write` (scan) and
+#   `id-token: write` (push), so the caller must grant both — otherwise GitHub
+#   rejects the workflow as invalid ("only allowed '...: none'").
 #
 # Required caller repo variable + secret:
 #   vars.YC_REGISTRY_ID        - Yandex Container Registry id (e.g. crp1234567890abcdef)
