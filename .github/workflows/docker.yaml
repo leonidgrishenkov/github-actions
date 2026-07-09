@@ -42,7 +42,7 @@
 #   rejects the workflow as invalid ("only allowed '...: none'").
 #
 # Required caller repo variable + secret:
-#   vars.YC_REGISTRY_ID        - Yandex Container Registry id (e.g. crp1234567890abcdef)
+#   vars.YC_REGISTRY_ID        - Yandex Container Registry id
 #   secrets.YC_CR_SA_AUTH_JSON - YC service account JSON key (used as `json_key` password)
 #
 # Note on `secrets: inherit`: this workflow does NOT declare a `secrets:` block, so the
