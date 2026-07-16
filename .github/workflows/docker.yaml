@@ -180,6 +180,48 @@ jobs:
           format: sarif
           output: trivy-results.sarif
 
+      # Print the findings as a readable table in the job log so scan failures
+      # are debuggable without leaving the Actions UI. Runs even when the scan
+      # step failed (exit-code: 1) so the CVEs that tripped the gate are visible.
+      - name: Print Trivy findings
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f trivy-results.sarif ]; then echo "No SARIF file produced."; exit 0; fi
+          python3 - <<'PY'
+          import json,re,sys
+          from collections import defaultdict
+          try:
+              d=json.load(open('trivy-results.sarif'))
+          except Exception as e:
+              print("Could not parse SARIF:",e); sys.exit(0)
+          sev_filter={"HIGH","CRITICAL"}
+          g=defaultdict(list)
+          for run in d.get('runs',[]):
+              for r in run.get('results',[]):
+                  t=r.get('message',{}).get('text','')
+                  pkg=re.search(r'Package:\s*(\S+)',t)
+                  inst=re.search(r'Installed Version:\s*(\S+)',t)
+                  sev=re.search(r'Severity:\s*(\S+)',t)
+                  fix=re.search(r'Fixed Version:\s*(.+)',t)
+                  cve=r.get('ruleId','')
+                  s=sev.group(1) if sev else ''
+                  if s not in sev_filter or not fix: continue
+                  g[(pkg.group(1) if pkg else '?', inst.group(1) if inst else '?')].append((s,fix.group(1).strip(),cve))
+          if not g:
+              print("No fixable HIGH/CRITICAL vulnerabilities found.")
+          else:
+              print("=== Fixable HIGH/CRITICAL findings (fail the gate) ===")
+              print()
+              for (pkg,inst),items in sorted(g.items()):
+                  cves=', '.join(sorted({c for _,_,c in items}))
+                  fixes='; '.join(sorted({f for _,f,_ in items}))
+                  print(f"{pkg} {inst}  [{','.join(sorted({s for s,_,_ in items}))}]")
+                  print(f"  CVEs: {cves}")
+                  print(f"  Fix to: {fixes}")
+                  print()
+          PY
+
       - name: Upload Trivy SARIF
         if: always()
         continue-on-error: true
