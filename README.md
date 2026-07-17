@@ -1,4 +1,3 @@
+# GitHub Actions
 
-# TODO:
-
-- [ ] build only for tags
+Common and boilerplate github actions workflows.
