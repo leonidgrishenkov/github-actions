@@ -18,7 +18,10 @@
 #   REGISTRY     = cr.yandex
 #   REGISTRY_ID  = ${{ vars.YC_REGISTRY_ID }}    (GitHub variable)
 #   PLATFORMS    = linux/amd64,linux/arm64
-#   PUSH         = always (this is a release workflow)
+#
+# Push is opt-out via the `push` input (default true). Set `push: false` to stop
+# after lint + scan — the gate runs, nothing is pushed. Useful for testing the
+# pipeline without side effects.
 #
 # Usage from another repo:
 #
@@ -32,7 +35,7 @@
 #       with:
 #         image-name: myapp
 #         # optional: dockerfile, context, scan-severity,
-#         #           smoke-test-args, provenance, sbom, registry-repo
+#         #           smoke-test-args, provenance, sbom, registry-repo, push
 #       secrets: inherit    # REQUIRED — forwards YC_CR_SA_AUTH_JSON (no explicit secret declared)
 #
 # WHY the caller must grant permissions:
@@ -98,6 +101,14 @@ on:
         description: Repository segment between registry id and image name. Empty = caller repo name.
         required: false
         default: ''
+        type: string
+      push:
+        description: >-
+          Run the push job (multi-arch build, registry push, SBOM + SLSA provenance,
+          cosign sign). When false, the workflow stops after lint + scan (the gate)
+          — useful for testing the pipeline without pushing. Default true (release).
+        required: false
+        default: 'true'
         type: string
 
 permissions:
@@ -274,12 +285,13 @@ jobs:
             echo "| Severity gate | \`${{ inputs.scan-severity }}\` |"
             echo "| Smoke test | ${{ inputs.smoke-test-args != '' && 'ran' || 'skipped' }} |"
             echo "| SARIF | Security › Code scanning alerts |"
-            echo "| Push | → next job (multi-arch) |"
+            echo "| Push | ${{ inputs.push == 'true' && '→ next job (multi-arch)' || 'skipped (push=false)' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   push:
     name: Build & push (multi-arch) + sign
     needs: scan
+    if: ${{ inputs.push == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
