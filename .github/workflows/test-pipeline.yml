@@ -1,0 +1,37 @@
+# Dogfoods the reusable docker workflow (./.github/workflows/docker.yaml) by building
+# a tiny image (testdata/Dockerfile) through the full pipeline: lint -> scan -> smoke
+# -> push. This is how changes to docker.yaml itself get validated end-to-end.
+#
+# Uses a LOCAL reusable-workflow reference (./.github/workflows/docker.yaml) so that a
+# PR modifying docker.yaml tests ITS OWN version of the workflow, not the one on main.
+#
+# Prerequisites on THIS repo (leonidgrishenkov/github-actions):
+#   * Repository variable  YC_REGISTRY_ID        (same value as on caller repos)
+#   * Repository secret     YC_CR_SA_AUTH_JSON    (same YC service-account JSON key)
+# Without these, the scan job's "Log in to Yandex Container Registry" step fails before
+# build/scan run. Add them under Settings > Secrets and variables > Actions.
+#
+# The tiny image is pushed to cr.yandex/<YC_REGISTRY_ID>/github-actions/pipeline-self-test.
+# Triggered manually (workflow_dispatch), on tags, and on PRs to main.
+name: Pipeline self-test
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['*.*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  docker:
+    permissions:
+      contents: read         # checkout
+      security-events: write # Trivy SARIF -> Code Scanning (scan job)
+      id-token: write        # cosign keyless OIDC (push job)
+    uses: ./.github/workflows/docker.yaml
+    with:
+      image-name: pipeline-self-test
+      registry-repo: github-actions
+      dockerfile: testdata/Dockerfile
+      smoke-test-args: "/etc/pipeline-test"
+    secrets: inherit    # forwards YC_CR_SA_AUTH_JSON; reads vars.YC_REGISTRY_ID
