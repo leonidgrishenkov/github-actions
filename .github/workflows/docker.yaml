@@ -120,7 +120,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run hadolint
         uses: hadolint/hadolint-action@v3.1.0
@@ -136,7 +136,7 @@ jobs:
       security-events: write   # upload Trivy SARIF to Code Scanning
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Prepare image reference
         env:
@@ -286,7 +286,7 @@ jobs:
       id-token: write          # OIDC for cosign keyless signing
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Prepare image reference
         env:
