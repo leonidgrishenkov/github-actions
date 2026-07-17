@@ -32,7 +32,7 @@ jobs:
     with:
       image-name: pipeline-self-test
       registry-repo: github-actions
-      dockerfile: testdata/Dockerfile
+      dockerfile: tests/Dockerfile
       smoke-test-args: "/etc/pipeline-test"
       # Lint + scan only — don't push the throwaway self-test image to the registry.
       # Flip to 'true' (or omit) to also exercise the multi-arch push/sign job.
