@@ -328,13 +328,14 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.FULL_IMAGE }}
-          # Exactly two published tags: the full commit SHA (hardcoded in the
-          # build-push step below) and the git tag version (e.g. 1.4). The semver
-          # rules only match when a version tag is pushed; on a 1.4 tag both
-          # collapse to :1.4, and a 1.4.2 tag also yields the rolling :1.4.
+          # Published tags: the full commit SHA (hardcoded in the build-push
+          # step below) plus the git tag verbatim (e.g. 1.5). Do NOT use
+          # type=semver here: it demands strict X.Y.Z, so a `1.5` tag is
+          # rejected ("not a valid semver") and no image tag is generated.
+          # type=ref,event=tag is safe because callers gate which tags trigger
+          # a release (e.g. push tags: ['*.*']).
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
