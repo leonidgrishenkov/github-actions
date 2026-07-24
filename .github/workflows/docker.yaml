@@ -174,7 +174,7 @@ jobs:
       # Build a single-arch image into the daemon so it can be scanned & smoke-tested.
       # (Multi-arch cannot be loaded locally, hence the amd64-only scan image.)
       - name: Build (amd64, load for scan)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
@@ -344,7 +344,7 @@ jobs:
       # SBOM + SLSA provenance attestations attached.
       - name: Build & push (multi-arch + attestations)
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.dockerfile }}
