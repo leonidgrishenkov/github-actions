@@ -54,10 +54,6 @@
 # The full image reference is built as:
 #   cr.yandex/<YC_REGISTRY_ID>/<registry-repo|caller-repo>/<image-name>
 # mirroring the existing cr.yandex/<id>/<repo>/<image> convention.
-#
-# Primary tag is the UTC build date (YYYYMMDD, e.g. 20250908). NOTE: multiple
-# runs on the same day overwrite the same tag. The commit is still traceable via
-# the org.opencontainers.image.revision label (set to github.sha).
 name: Build & Push Docker Image (YC CR)
 
 on:
@@ -161,10 +157,8 @@ jobs:
         run: |
           REPO="${REPO_IN:-$REPO_DEFAULT}"
           FULL="${REGISTRY}/${REGISTRY_ID}/${REPO}/${IMAGE_NAME}"
-          DATE_TAG="$(date -u +'%Y%m%d')"
           echo "FULL_IMAGE=${FULL}" >> "$GITHUB_ENV"
-          echo "DATE_TAG=${DATE_TAG}" >> "$GITHUB_ENV"
-          echo "::notice::Scanning ${FULL}:${DATE_TAG}"
+          echo "::notice::Scanning ${FULL}:${{ github.sha }}"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -186,7 +180,7 @@ jobs:
           file: ${{ inputs.dockerfile }}
           platforms: linux/amd64
           load: true
-          tags: ${{ env.FULL_IMAGE }}:${{ env.DATE_TAG }}
+          tags: ${{ env.FULL_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,key=${{ inputs.image-name }}
           cache-to: type=gha,mode=max,key=${{ inputs.image-name }}
           provenance: false
@@ -194,7 +188,7 @@ jobs:
       - name: Scan image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0   # v-prefixed tag (post-2025 supply-chain migration)
         with:
-          image-ref: ${{ env.FULL_IMAGE }}:${{ env.DATE_TAG }}
+          image-ref: ${{ env.FULL_IMAGE }}:${{ github.sha }}
           severity: ${{ inputs.scan-severity }}
           ignore-unfixed: true
           exit-code: '1'
@@ -261,7 +255,7 @@ jobs:
       - name: Smoke test
         if: ${{ inputs.smoke-test-args != '' }}
         run: |
-          IMG="${{ env.FULL_IMAGE }}:${{ env.DATE_TAG }}"
+          IMG="${{ env.FULL_IMAGE }}:${{ github.sha }}"
           ARGS="${{ inputs.smoke-test-args }}"
           case "$ARGS" in
             -*)
@@ -287,7 +281,7 @@ jobs:
             echo ""
             echo "| Key | Value |"
             echo "|---|---|"
-            echo "| Image | \`${{ env.FULL_IMAGE }}:${{ env.DATE_TAG }}\` |"
+            echo "| Image | \`${{ env.FULL_IMAGE }}:${{ github.sha }}\` |"
             echo "| Severity gate | \`${{ inputs.scan-severity }}\` |"
             echo "| Smoke test | ${{ inputs.smoke-test-args != '' && 'ran' || 'skipped' }} |"
             echo "| SARIF | Security › Code scanning alerts |"
@@ -314,9 +308,7 @@ jobs:
         run: |
           REPO="${REPO_IN:-$REPO_DEFAULT}"
           FULL="${REGISTRY}/${REGISTRY_ID}/${REPO}/${IMAGE_NAME}"
-          DATE_TAG="$(date -u +'%Y%m%d')"
           echo "FULL_IMAGE=${FULL}" >> "$GITHUB_ENV"
-          echo "DATE_TAG=${DATE_TAG}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
@@ -337,7 +329,7 @@ jobs:
         with:
           images: ${{ env.FULL_IMAGE }}
           tags: |
-            type=raw,value=${{ env.DATE_TAG }}
+            type=sha,format=short
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
@@ -357,7 +349,7 @@ jobs:
           platforms: ${{ env.PLATFORMS }}
           push: true
           tags: |
-            ${{ env.FULL_IMAGE }}:${{ env.DATE_TAG }}
+            ${{ env.FULL_IMAGE }}:${{ github.sha }}
             ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: ${{ inputs.provenance }}
