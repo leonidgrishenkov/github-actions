@@ -69,7 +69,12 @@
 #      trust policy is (StringEquals, no tag subjects):
 #        token.actions.githubusercontent.com:aud = sts.amazonaws.com
 #        token.actions.githubusercontent.com:sub = repo:<owner>/<repo>:environment:release
-#      and the role needs:
+#      unless the caller repo uses immutable subjects, which put the owner and
+#      repository IDs in it (repo:<owner>@<owner_id>/<repo>@<repo_id>:...). Nothing
+#      else matches, so take the prefix from GitHub rather than writing it by hand:
+#        gh api repos/<owner>/<repo>/actions/oidc/customization/sub --jq .sub_claim_prefix
+#      and trust <sub_claim_prefix>:environment:release.
+#      The role needs:
 #        ecr-public:GetAuthorizationToken, sts:GetServiceBearerToken   on "*"
 #        ecr-public:BatchCheckLayerAvailability, ecr-public:InitiateLayerUpload,
 #        ecr-public:UploadLayerPart, ecr-public:CompleteLayerUpload,
