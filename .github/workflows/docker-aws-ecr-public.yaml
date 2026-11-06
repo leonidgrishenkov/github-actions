@@ -1,0 +1,226 @@
+# Reusable Docker build/release workflow for Amazon ECR Public (public.ecr.aws).
+#
+# Jobs:
+#   checks  (hadolint, release-ref gate)
+#     └─ release (build multi-arch, push to public.ecr.aws/<alias>/<image-name>)
+#
+# Why build and push in one step?
+#   buildx cannot load a multi-platform image into the local Docker image store,
+#   so a separate "build" job would have nothing to hand to "push" except an OCI
+#   tarball artifact or a second build. With push: true buildx pushes only after
+#   every platform has built, so a failed build still pushes nothing.
+#
+# Release gate: only main publishes. Git tags aren't tied to a branch (anyone can
+# tag a commit on any branch), so a tag run passes only when the tagged commit is
+# reachable from main, and a branch run only when the branch is main. Anything
+# else (feature branches, pull requests) fails the gate and nothing is pushed.
+#
+# Published tags:
+#   <git tag>  verbatim (e.g. 4.33.0-1), on tag runs
+#   latest     on tag runs
+#   <sha>      full commit SHA, on every run
+#
+# No build cache: GHA cache is scoped per ref, so a new tag can't read the cache
+# of the previous one and it would only pay off on re-runs.
+#
+# Hardcoded in this file (not exposed as inputs):
+#   IMAGE          = public.ecr.aws/<registry-alias>/<image-name>
+#   RELEASE_BRANCH = main
+#
+# Usage from another repo:
+#
+#   on:
+#     push:
+#       tags: ['*.*']
+#
+#   jobs:
+#     docker:
+#       permissions:
+#         contents: read   # checkout
+#         id-token: write  # OIDC for the AWS role (release job)
+#       uses: leonidgrishenkov/github-actions/.github/workflows/docker-aws-ecr-public.yaml@main
+#       with:
+#         image-name: liquibase-clickhouse
+#         registry-alias: a8c0b5z6
+#         # optional: dockerfile, context, platforms, hadolint-failure-threshold
+#       secrets:
+#         AWS_ROLE_ARN: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+#
+# WHY the caller must grant permissions:
+#   Reusable workflows can only *maintain or reduce* permissions, never elevate
+#   them. The release job requests `id-token: write`, so the caller must grant it,
+#   otherwise GitHub rejects the workflow as invalid.
+#
+# Prerequisites (not created by this workflow):
+#   1. The ECR Public repository <image-name> must already exist under the registry
+#      alias, e.g. infra/cloud/aws/live/us-east-1/container/ecr/public/<image-name>.
+#      ECR Public does not create repositories on push.
+#   2. An IAM role the caller repo can assume through GitHub OIDC. The token's `sub`
+#      claim names the CALLER repo and ref, not this repo, so the trust policy is:
+#        token.actions.githubusercontent.com:aud = sts.amazonaws.com
+#        token.actions.githubusercontent.com:sub = repo:<owner>/<repo>:ref:refs/tags/*
+#      and the role needs:
+#        ecr-public:GetAuthorizationToken, sts:GetServiceBearerToken   on "*"
+#        ecr-public:BatchCheckLayerAvailability, ecr-public:InitiateLayerUpload,
+#        ecr-public:UploadLayerPart, ecr-public:CompleteLayerUpload,
+#        ecr-public:PutImage   on arn:aws:ecr-public::<account>:repository/<image-name>
+#   3. A caller repo secret with that role's ARN, passed as AWS_ROLE_ARN. It is a
+#      secret so the account ID doesn't show up in the logs of a public repo.
+name: Build & Push Docker Image (ECR Public)
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: ECR Public repository name (last path segment of the image).
+        required: true
+        type: string
+      registry-alias:
+        description: ECR Public registry alias, e.g. a8c0b5z6 in public.ecr.aws/a8c0b5z6.
+        required: true
+        type: string
+      dockerfile:
+        description: Path to the Dockerfile, relative to the repository root.
+        required: false
+        default: ./Dockerfile
+        type: string
+      context:
+        description: Build context path.
+        required: false
+        default: .
+        type: string
+      platforms:
+        description: Comma-separated target platforms.
+        required: false
+        default: linux/amd64,linux/arm64
+        type: string
+      hadolint-failure-threshold:
+        description: >-
+          Lowest hadolint severity that fails the build (error | warning | info |
+          style | ignore). Findings below it are still printed. Defaults to warning
+          rather than hadolint's info, so hints like DL3066 (non-numeric USER)
+          don't block a release.
+        required: false
+        default: warning
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        description: ARN of the IAM role to assume through GitHub OIDC; must be allowed to push to the repository.
+        required: true
+
+permissions:
+  contents: read   # least-privilege default; expanded per job below
+
+env:
+  IMAGE: public.ecr.aws/${{ inputs.registry-alias }}/${{ inputs.image-name }}
+  RELEASE_BRANCH: main
+
+concurrency:
+  group: ${{ inputs.image-name }}-${{ github.ref }}
+  cancel-in-progress: false   # never cancel a multi-arch push mid-flight
+
+jobs:
+  checks:
+    name: Lint & checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history, to check that a tagged commit is on main
+
+      - name: Run hadolint
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: ${{ inputs.dockerfile }}
+          failure-threshold: ${{ inputs.hadolint-failure-threshold }}
+
+      - name: Assert ref is on main
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            git fetch --no-tags origin "+refs/heads/${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}"
+            if ! git merge-base --is-ancestor HEAD "origin/${RELEASE_BRANCH}"; then
+              echo "::error::Tag ${GITHUB_REF_NAME} ($(git rev-parse HEAD)) is not reachable from ${RELEASE_BRANCH}. Tag a commit on ${RELEASE_BRANCH} to release."
+              exit 1
+            fi
+          elif [ "$GITHUB_REF_NAME" != "$RELEASE_BRANCH" ]; then
+            echo "::error::Only ${RELEASE_BRANCH} and tags on it are released, got ${GITHUB_REF_TYPE} ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+          echo "::notice::${GITHUB_REF_TYPE} ${GITHUB_REF_NAME} is on ${RELEASE_BRANCH}, releasing."
+
+  release:
+    name: Build & push (multi-arch)
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC for the AWS role
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # ECR Public's API, and so its auth tokens, are served only from us-east-1.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          mask-aws-account-id: true
+
+      - name: Log in to ECR Public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive tags & labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # Do NOT use type=semver: it demands strict X.Y.Z, so a `1.5` or
+          # `4.33.0-1` style tag would be rejected and no image tag generated.
+          # `latest` is explicit rather than flavor latest=auto, so it's clear
+          # it moves on tag runs only.
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=sha,format=long,prefix=
+          flavor: |
+            latest=false
+
+      - name: Build & push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Release summary
+        env:
+          TAGS: ${{ join(fromJSON(steps.meta.outputs.json).tags, ' ') }}
+          PLATFORMS: ${{ inputs.platforms }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Docker release summary"
+            echo ""
+            echo "| Key | Value |"
+            echo "|---|---|"
+            echo "| Image | \`${IMAGE}\` |"
+            echo "| Tags | \`${TAGS}\` |"
+            echo "| Platforms | \`${PLATFORMS}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
